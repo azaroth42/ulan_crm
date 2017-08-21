@@ -483,7 +483,7 @@ svc = ULAN_CRM_Server()
 if __name__ == "__main__":
 	fn = "context.json"
 else:
-	fn = '/home/azaroth/web_services/context.json'
+	fn = '/home/azaroth/web_services/ulan_crm/context.json'
 
 # Base ULAN context and frame
 fh = file(fn)
