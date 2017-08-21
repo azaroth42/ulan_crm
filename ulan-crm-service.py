@@ -12,7 +12,7 @@ import os
 
 from cromulent.model import factory, Person, Type, InformationObject, \
 	Appellation, Group, TimeSpan, Place, BeginningOfExistence, EndOfExistence, \
-	Actor, Creation, Activity 
+	Actor, Creation, Activity, OrderedDict 
 from cromulent.vocab import WebPage, Nationality, Gender, BiographyStatement, \
 	PrimaryName, Description, Active
 from cromulent.extra import add_rdf_value, add_schema_properties
@@ -23,32 +23,6 @@ factory.base_url = "http://vocab.getty.edu/ulan/"
 factory.base_dir = "data"
 baseUrl = "http://vocab.getty.edu/"
 
-# Base ULAN context and frame
-fh = file('/home/azaroth/web_services/context.json')
-ctxt = fh.read()
-fh.close()
-context_js = json.loads(ctxt)
-
-frame_js = {"@context": context_js['@context'],
-			"type": "skos:Concept",
-			"contributor": {"@embed": False},
-			"source": {"@embed": False},
-			"changeNote": {"@embed": False},
-			"note": {"@embed": False},
-
-			"mappingRelation": {"@embed": False},
-			"exactMatch": {"@embed": False},
-			"closeMatch": {"@embed": False}
-
-			# "conceptFor": {
-			# 	"biography": {"@embed": False},
-			# 	"biographyNonPref": {"@embed": False},
-			# 	"biographyPref": {"@embed": False},
-			# 	"event": {"@embed": False},
-			# 	"eventPref": {"@embed": False},
-			# 	"eventNonPref": {"@embed": False}
-			# }
-		}
 
 class ULAN_CRM_Server(object):
 
@@ -56,24 +30,7 @@ class ULAN_CRM_Server(object):
 		self.cache = {}
 		self.json_cache = {}
 		self.DO_SOURCES = False		
-		self.prop_data = {
-			"BeginningOfExistence": [
-				["timespan", "begin_of_the_begin"],
-				["timespan", "end_of_the_end"],
-				["took_place_at", "id"]
-			],
-			"EndOfExistence": [
-				["timespan", "begin_of_the_begin"],
-				["timespan", "end_of_the_end"],
-				["took_place_at", "id"]
-			],
-			"Type": [
-				["id"]
-			],
-			"Group": [
-				["classified_as", "label"]
-			]
-		}
+		self.prop_data = {}
 
 	def expand_url(self, url):
 		url = url.replace('aat:', context_js['@context']['aat'])
@@ -152,20 +109,31 @@ class ULAN_CRM_Server(object):
 		# Changes are by ref, so what is modified in place, but return it anyway
 		return what
 
-	def self.data_exists(self, new, olds):
-		# BegofExist:  timespan.botb, timespan.eote, took_place_at.id		
-		props = self.prop_data.get(new.type, [])
-		if not props:
-			return False
 
+	def strip_ids(self, what):
+		try:
+			del what['id']
+		except:
+			pass
+		for v in what.values():
+			if not type(v) == list:
+				v = [v]
+			for vi in v:
+				if isinstance(vi, OrderedDict):
+					self.strip_ids(vi)
+
+	def data_exists(self, new, olds):		
+		js = factory.toJSON(new)
+		self.strip_ids(js)
+		# internally not always a list, only at serialization
+		if not type(olds) == list:
+			olds = [olds]
 		for o in olds:
-			for p in props:
-				for pi in p:
-					op = getattr(o, p, None)
-					np = getattr(new, p, None)
-					if op and np and op != np:
-						return False
-		return True
+			njs = factory.toJSON(o)
+			self.strip_ids(njs)
+			if js == njs:
+				return o
+		return False
 
 
 	def process_bio(self, who, bp, pref=True):
@@ -188,12 +156,9 @@ class ULAN_CRM_Server(object):
 			p = Place(self.expand_url(birthplace))
 			p.label = bj.get('label', bj.get('rdfs:label', bj.get('skos:prefLabel')))
 			bev.took_place_at = p
-		if birth or birthplace:
-			if pref:
-				who.brought_into_existence_by = bev
-			else:
-				if not self.data_exists(bev, who.brought_into_existence_by):
-					who.brought_into_existence_by = bev			
+		if (birth or birthplace):
+			if not hasattr(who, 'brought_into_existence_by') or not self.data_exists(bev, who.brought_into_existence_by):
+				who.brought_into_existence_by = bev			
 
 		eev = EndOfExistence()
 		if death:
@@ -206,28 +171,26 @@ class ULAN_CRM_Server(object):
 			p = Place(self.expand_url(deathplace))
 			p.label = bj.get('label', bj.get('rdfs:label', bj.get('skos:prefLabel')))
 			eev.took_place_at = p
-		if death or deathplace:
-			if pref:				
+		if (death or deathplace):
+			if not hasattr(who, 'taken_out_of_existence_by') or not self.data_exists(eev, who.taken_out_of_existence_by):
 				who.taken_out_of_existence_by = eev
-			else:
-				if not self.data_exists(eev, who.taken_out_of_existence_by):
-					who.taken_out_of_existence_by = eev
 
 		if gender and gender != "aat:300400512":
 			g = Gender()
 			g.classified_as = Type(gender)
 			gj = self.fetch_graph(gender)
 			g.label = gj['label']
-			if pref:
+			if not hasattr(who, 'member_of') or not self.data_exists(g, who.member_of):
 				who.member_of = g
-			else:
-				if not self.data_exists(g, who.member_of):
-					who.member_of = g
 
 		if desc:
 			bio = BiographyStatement()
 			bio.value = desc
-			who.referred_to_by = bio
+			ex = self.data_exists(bio, who.referred_to_by)
+			if ex:
+				bio = ex
+			else:
+				who.referred_to_by = bio				
 			if contrib:
 				cre = Creation()
 				bio.created_by = cre
@@ -474,6 +437,7 @@ class ULAN_CRM_Server(object):
 		if type(nbp) != list:
 			nbp = [nbp]
 		for bp in nbp:
+			print "calling process_bio"
 			self.process_bio(who, bp, False)
 
 	def handle_id(self, ulan):
@@ -515,5 +479,29 @@ class ULAN_CRM_Server(object):
 
 
 svc = ULAN_CRM_Server()
-#run(host="localhost", port="8888", app=svc.get_bottle_app(), debug=True)
-application = svc.get_bottle_app()
+
+if __name__ == "__main__":
+	fn = "context.json"
+else:
+	fn = '/home/azaroth/web_services/context.json'
+
+# Base ULAN context and frame
+fh = file(fn)
+ctxt = fh.read()
+fh.close()
+context_js = json.loads(ctxt)
+frame_js = {"@context": context_js['@context'],
+			"type": "skos:Concept",
+			"contributor": {"@embed": False},
+			"source": {"@embed": False},
+			"changeNote": {"@embed": False},
+			"note": {"@embed": False},
+			"mappingRelation": {"@embed": False},
+			"exactMatch": {"@embed": False},
+			"closeMatch": {"@embed": False}
+		}
+
+if __name__ == "__main__":
+	run(host="localhost", port="8888", app=svc.get_bottle_app(), debug=True)
+else:
+	application = svc.get_bottle_app()
